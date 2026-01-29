@@ -9,55 +9,62 @@ class Program
 {
     static async Task Main(string[] args)
     {
-        if (args.Length < 2) return; // 参数不足直接退出
+        // 1. 参数校验
+        if (args.Length < 2) return;
 
         string urlPattern = args[0];
         string forwardToUrl = args[1];
         int listenPort = (args.Length >= 3) ? int.Parse(args[2]) : 8888;
 
-        // --- 核心优化设置：防止长时间运行产生垃圾 ---
-        FiddlerApplication.Config.IgnoreServerCertErrors = true;
-        // 1. 内存优化：不保存会话记录
-        FiddlerApplication.AfterSessionComplete += (session) => {
-            // 处理完逻辑后，立即销毁 Session 对象释放内存
-            session.ViewAsBytes(); 
-        };
-
-        // 2. 核心监听逻辑
+        // 2. 核心抓包与内存优化逻辑
+        // 注意：4.6.2 版本使用 AfterSessionComplete
         FiddlerApplication.AfterSessionComplete += (session) =>
         {
-            // 只处理匹配正则且是 JSON 的响应
-            if (Regex.IsMatch(session.fullUrl, urlPattern, RegexOptions.IgnoreCase))
+            try
             {
-                if (session.HasResponse && session.oResponse.MIMEType.Contains("json"))
+                // 检查 URL 是否匹配正则
+                if (Regex.IsMatch(session.fullUrl, urlPattern, RegexOptions.IgnoreCase))
                 {
-                    string jsonBody = session.GetResponseBodyAsString();
-                    
-                    // 异步转发，不影响主线程
-                    Task.Run(async () => {
-                        try {
-                            using var client = new HttpClient();
-                            var content = new StringContent(jsonBody, Encoding.UTF8, "application/json");
-                            await client.PostAsync(forwardToUrl, content);
-                        } catch { } // 长时间运行，忽略个别转发失败，防止程序崩溃
-                    });
+                    // 4.6.2 判断响应是否存在的标准写法
+                    if (session.oResponse != null && session.oResponse.MIMEType.Contains("json"))
+                    {
+                        string jsonBody = session.GetResponseBodyAsString();
+                        
+                        // 异步转发
+                        Task.Run(async () => {
+                            try {
+                                using (var client = new HttpClient())
+                                {
+                                    var content = new StringContent(jsonBody, Encoding.UTF8, "application/json");
+                                    await client.PostAsync(forwardToUrl, content);
+                                }
+                            } catch { } // 忽略转发异常
+                        });
+                    }
                 }
             }
-            
-            // 关键：清理该会话占用的内存，防止30天运行内存溢出
-            session.oRequest.Dispose();
-            session.oResponse.Dispose();
+            finally
+            {
+                // --- 4.6.2 版本的内存回收秘籍 ---
+                // 不使用 Dispose，而是清空大对象，让垃圾回收器(GC)能快速回收
+                session.RequestBody = new byte[0];
+                session.ResponseBody = new byte[0];
+            }
         };
 
-        // 3. 启动（禁用冗余日志输出）
+        // 3. 启动参数
+        // 4.6.2 不支持 IgnoreServerCertErrors 这种写法，直接在 flags 里定义
         FiddlerCoreStartupFlags flags = FiddlerCoreStartupFlags.Default 
                                         | FiddlerCoreStartupFlags.RegisterAsSystemProxy 
                                         | FiddlerCoreStartupFlags.DecryptSSL;
 
         FiddlerApplication.Startup(listenPort, flags);
         
-        // 保持后台运行，不再等待 Console.ReadLine()
-        // 这种写法适合无界面后台运行
-        await Task.Delay(-1); 
+        // 4. 后台长效运行逻辑
+        // 在影刀隐藏运行时，通过这个死循环保持进程不退出
+        while (true)
+        {
+            await Task.Delay(60000); // 每分钟休眠一次，极低 CPU 占用
+        }
     }
 }
