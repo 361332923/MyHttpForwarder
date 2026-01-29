@@ -21,13 +21,12 @@ jobs:
     - name: Restore Dependencies
       run: dotnet restore
 
-    - name: Publish (Folder Mode)
-      # 删除了单文件参数，确保所有依赖 DLL 都会生成
+    - name: Publish (Full Folder)
       run: dotnet publish -c Release -r win-x64 --self-contained true
 
-    - name: Upload Finished Folder
+    - name: Upload Artifact
       uses: actions/upload-artifact@v4
       with:
-        name: MyHttpTool-FullPackage
-        # 路径指向整个 publish 文件夹，而不仅仅是 .exe
+        name: HttpForwarder-FullPackage
+        # 抓取整个目录，确保 System.Windows.Forms.dll 被包含
         path: bin/Release/net8.0-windows/win-x64/publish/
