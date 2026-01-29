@@ -1,4 +1,5 @@
 using System;
+using System.IO;
 using System.Net.Http;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -7,64 +8,102 @@ using Fiddler;
 
 class Program
 {
+    // 日志文件路径：位于 EXE 相同目录下
+    static string logFilePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "capture_log.txt");
+
     static async Task Main(string[] args)
     {
         // 1. 参数校验
-        if (args.Length < 2) return;
+        if (args.Length < 2)
+        {
+            Console.WriteLine("用法：HttpForwarder.exe <URL正则> <转发地址> [端口(默认8888)]");
+            return;
+        }
 
         string urlPattern = args[0];
         string forwardToUrl = args[1];
         int listenPort = (args.Length >= 3) ? int.Parse(args[2]) : 8888;
 
-        // 2. 核心抓包与内存优化逻辑
-        // 注意：4.6.2 版本使用 AfterSessionComplete
+        WriteLog($"=== 程序启动 ===");
+        WriteLog($"[配置] 正则规则: {urlPattern}");
+        WriteLog($"[配置] 转发目标: {forwardToUrl}");
+        WriteLog($"[配置] 监听端口: {listenPort}");
+
+        // 2. 核心监听逻辑
         FiddlerApplication.AfterSessionComplete += (session) =>
         {
             try
             {
-                // 检查 URL 是否匹配正则
+                // 正则匹配 URL
                 if (Regex.IsMatch(session.fullUrl, urlPattern, RegexOptions.IgnoreCase))
                 {
-                    // 4.6.2 判断响应是否存在的标准写法
+                    // 确保有响应且是 JSON
                     if (session.oResponse != null && session.oResponse.MIMEType.Contains("json"))
                     {
                         string jsonBody = session.GetResponseBodyAsString();
-                        
-                        // 异步转发
+                        WriteLog($"[命中] 捕获到目标 URL: {session.fullUrl}");
+
+                        // 异步 POST 转发
                         Task.Run(async () => {
                             try {
                                 using (var client = new HttpClient())
                                 {
                                     var content = new StringContent(jsonBody, Encoding.UTF8, "application/json");
-                                    await client.PostAsync(forwardToUrl, content);
+                                    var response = await client.PostAsync(forwardToUrl, content);
+                                    WriteLog($" >> [转发成功] 状态码: {response.StatusCode} | URL: {session.fullUrl}");
                                 }
-                            } catch { } // 忽略转发异常
+                            } catch (Exception ex) {
+                                WriteLog($" >> [转发失败] 错误: {ex.Message}");
+                            }
                         });
                     }
                 }
             }
+            catch (Exception ex)
+            {
+                WriteLog($"[异常] 处理 Session 时出错: {ex.Message}");
+            }
             finally
             {
-                // --- 4.6.2 版本的内存回收秘籍 ---
-                // 不使用 Dispose，而是清空大对象，让垃圾回收器(GC)能快速回收
+                // 内存优化：清空大对象，防止 30 天运行内存溢出
                 session.RequestBody = new byte[0];
                 session.ResponseBody = new byte[0];
             }
         };
 
-        // 3. 启动参数
-        // 4.6.2 不支持 IgnoreServerCertErrors 这种写法，直接在 flags 里定义
+        // 3. 启动 FiddlerCore
         FiddlerCoreStartupFlags flags = FiddlerCoreStartupFlags.Default 
                                         | FiddlerCoreStartupFlags.RegisterAsSystemProxy 
                                         | FiddlerCoreStartupFlags.DecryptSSL;
 
         FiddlerApplication.Startup(listenPort, flags);
-        
-        // 4. 后台长效运行逻辑
-        // 在影刀隐藏运行时，通过这个死循环保持进程不退出
+        WriteLog($"[*] 服务已进入监听状态...");
+
+        // 4. 保持运行（适合影刀后台隐藏运行）
         while (true)
         {
-            await Task.Delay(60000); // 每分钟休眠一次，极低 CPU 占用
+            await Task.Delay(60000); // 每分钟休眠一次，极低消耗
+            
+            // 可选：如果日志文件超过 10MB，自动清理
+            FileInfo fileInfo = new FileInfo(logFilePath);
+            if (fileInfo.Exists && fileInfo.Length > 10 * 1024 * 1024)
+            {
+                File.WriteAllText(logFilePath, $"[{DateTime.Now}] 日志超过10MB，已自动重置。{Environment.NewLine}");
+            }
         }
+    }
+
+    // 通用的写日志方法
+    static void WriteLog(string message)
+    {
+        try
+        {
+            string entry = $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] {message}{Environment.NewLine}";
+            // 控制台输出（调试用）
+            Console.Write(entry);
+            // 写入本地文件
+            File.AppendAllText(logFilePath, entry);
+        }
+        catch { /* 忽略日志写入本身的错误 */ }
     }
 }
