@@ -28,13 +28,40 @@ class Program
         // 这是解决 .NET 8 下看不到 HTTPS 的关键配置
         FiddlerApplication.Prefs.SetStringPref("fiddler.certmaker.bc.keypair", "2048");
         FiddlerApplication.Prefs.SetStringPref("fiddler.certmaker.bc.engine", "BouncyCastle");
+        
+        // === HTTPS 解密必须开关 ===
+        FiddlerApplication.Prefs.SetBoolPref("fiddler.network.streaming.abortifclientaborts", true);
+        FiddlerApplication.Prefs.SetBoolPref("fiddler.network.streaming.ForgetStreamedData", false);
+        FiddlerApplication.Prefs.SetBoolPref("fiddler.network.https.decrypt", true);
+
+        // 允许 MITM
+        FiddlerApplication.Prefs.SetBoolPref("fiddler.network.https.ignorecerterrors", true);
+        FiddlerApplication.Prefs.SetBoolPref("fiddler.network.https.captureconnect", true);
+
+        // TLS 兼容（Win10 必开）
+        FiddlerApplication.Prefs.SetStringPref("fiddler.network.https.SslProtocols", "Tls12");
 
         // 检查并安装证书
         if (!CertMaker.rootCertExists())
         {
             WriteLog("[!] 初始化 HTTPS 根证书...");
-            if (!CertMaker.createRootCert()) WriteLog("[错误] 创建证书失败，HTTPS 将不可用。");
-            if (!CertMaker.trustRootCert()) WriteLog("[错误] 用户拒绝信任证书，HTTPS 将不可用。");
+            if (!CertMaker.createRootCert()) 
+            {
+                WriteLog("[错误] 创建证书失败，HTTPS 将不可用。");
+            }
+            else
+            {
+                if (!CertMaker.trustRootCert()) 
+                {
+                    WriteLog("[错误] 用户拒绝信任证书，HTTPS 将不可用。");
+                    // 重要：在 Windows 10 上可能需要手动运行证书信任
+                    WriteLog("[提示] 请尝试以管理员身份运行程序，或手动信任证书。");
+                }
+                else
+                {
+                    WriteLog("[OK] 证书已成功创建并信任。");
+                }
+            }
         }
         else
         {
@@ -50,6 +77,11 @@ class Program
             {
                 // 标记为不解密 (Tunnel-Through)
                 session["x-no-decrypt"] = "true";
+            }
+            else
+            {
+                // 确保 HTTPS 流量被解密
+                session["x-decrypt"] = "true";
             }
         };
 
@@ -99,14 +131,28 @@ class Program
             }
         };
 
+        // 添加错误处理器 - 帮助诊断HTTPS问题
+        FiddlerApplication.OnNotification += (sender, e) =>
+        {
+            WriteLog($"[通知] {e.NotifyString}");
+        };
+
+        FiddlerApplication.OnWebSocketMessage += (sender, e) =>
+        {
+            WriteLog($"[WebSocket] {e.wsMessage.PayloadAsString()}");
+        };
+
         FiddlerCoreStartupFlags flags = FiddlerCoreStartupFlags.Default 
                                         | FiddlerCoreStartupFlags.RegisterAsSystemProxy 
+                                        | FiddlerCoreStartupFlags.AllowRemoteClients
                                         | FiddlerCoreStartupFlags.DecryptSSL; // 必须开启 SSL 解密
 
         FiddlerApplication.Startup(listenPort, flags);
         WriteLog($"[*] 监听服务运行中 (端口: {listenPort})...");
 
-        while (true) await Task.Delay(60000);
+        Console.WriteLine("按回车键停止程序...");
+        Console.ReadLine();
+        FiddlerApplication.Shutdown();
     }
 
     static void WriteLog(string message)
