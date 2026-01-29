@@ -1,31 +1,37 @@
-name: Build EXE v4
+name: Build My HTTP Forwarder
 
 on:
   push:
     branches: [ "main" ]
-  workflow_dispatch:
+  workflow_dispatch: # 允许你在 GitHub 页面上点击按钮手动触发编译
 
 jobs:
   build:
     runs-on: windows-latest
 
     steps:
-    - uses: actions/checkout@v4
+    - name: Checkout Code
+      uses: actions/checkout@v4
 
-    - name: Setup .NET
+    - name: Setup .NET SDK
       uses: actions/setup-dotnet@v4
       with:
-        # 改为 8.0.x
-        dotnet-version: 8.0.x
+        dotnet-version: 8.0.x # 强制使用最新的稳定版 SDK
 
-    - name: Restore dependencies
+    - name: Restore Dependencies
+      # 如果这里报错，请检查 csproj 文件里的包名是否正确
       run: dotnet restore
 
-    - name: Publish EXE
+    - name: Publish EXE (Single File)
+      # 参数说明：
+      # -r win-x64: 指定生成的平台是 Windows 64位
+      # --self-contained true: 把 .NET 运行时也打进去，对方电脑没装 .NET 也能跑
+      # /p:PublishSingleFile=true: 强制打成一个单独的 .exe
       run: dotnet publish -c Release -r win-x64 --self-contained true /p:PublishSingleFile=true /p:PublishTrimmed=false
 
-    - name: Upload Artifact
+    - name: Upload Finished EXE
       uses: actions/upload-artifact@v4
       with:
-        name: MyHttpTool
+        name: MyHttpTool-Finished
+        # 路径必须与 TargetFramework(net8.0-windows) 对应
         path: bin/Release/net8.0-windows/win-x64/publish/*.exe
